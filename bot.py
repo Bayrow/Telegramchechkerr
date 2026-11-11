@@ -2,18 +2,34 @@ import os
 import asyncio
 import logging
 import aiohttp
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # Log ayarları
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- AYARLAR (Render Environment Variables üzerinden güvenle okunur) ---
+# --- RENDER WEB SERVICE İÇİN PORT KONTROLÜ ---
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Telegram Bot is active and running!")
+        
+    def log_message(self, format, *args):
+        pass # Gereksiz log kirliliğini önler
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+# --- AYARLAR ---
 TOKEN = os.getenv("BOT_TOKEN")
 MY_CHAT_ID = int(os.getenv("MY_CHAT_ID", "0"))
-CHECK_INTERVAL = 600   # Kaç saniyede bir kontrol edilsin? (300 saniye = 5 dakika)
+CHECK_INTERVAL = 300   # Kaç saniyede bir kontrol edilsin? (300 saniye = 5 dakika)
 
-# Takip edilecek hesaplar kümesi
 tracked_accounts = {
     "instagram": set(),
     "tiktok": set()
@@ -56,9 +72,8 @@ async def monitor_accounts(app):
                     await app.bot.send_message(chat_id=MY_CHAT_ID, text=msg, parse_mode="Markdown")
                     tracked_accounts[platform].remove(username)
 
-# --- TELEGRAM KOMUTLARI (ID KONTROLLÜ) ---
+# --- TELEGRAM KOMUTLARI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Sadece senin ID'n ile eşleşirse çalışır
     if update.effective_user.id != MY_CHAT_ID:
         await update.message.reply_text("⛔ Bu bot özeldir, sadece sahibi kullanabilir.")
         return
@@ -73,7 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_CHAT_ID:
-        return  # Yetkisiz kişilere sessiz kalır
+        return
 
     if len(context.args) < 2:
         await update.message.reply_text("Kullanım: `/ekle instagram kullanıcı_adı`", parse_mode="Markdown")
@@ -104,6 +119,9 @@ if __name__ == '__main__':
         logging.error("HATA: BOT_TOKEN veya MY_CHAT_ID çevre değişkenleri eksik!")
         exit(1)
 
+    # Render'ın Web Service port kontrolünü geçmesi için arka planda mini web sunucusu başlatıyoruz
+    threading.Thread(target=run_web_server, daemon=True).start()
+
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler('start', start))
@@ -113,5 +131,5 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(monitor_accounts(application))
 
-    print("Bot çalışıyor...")
+    print("Bot ve Web Sunucusu çalışıyor...")
     application.run_polling()
