@@ -18,7 +18,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Telegram Bot is active and running!")
         
     def log_message(self, format, *args):
-        pass # Gereksiz log kirliliğini önler
+        pass
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -28,7 +28,7 @@ def run_web_server():
 # --- AYARLAR ---
 TOKEN = os.getenv("BOT_TOKEN")
 MY_CHAT_ID = int(os.getenv("MY_CHAT_ID", "0"))
-CHECK_INTERVAL = 300   # Kaç saniyede bir kontrol edilsin? (300 saniye = 5 dakika)
+CHECK_INTERVAL = 300   # 5 dakikada bir kontrol
 
 tracked_accounts = {
     "instagram": set(),
@@ -51,9 +51,7 @@ async def is_account_active(platform: str, username: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, allow_redirects=True, timeout=10) as response:
-                if response.status == 200:
-                    return True
-                return False
+                return response.status == 200
     except Exception as e:
         logging.error(f"Hata oluştu ({platform} - {username}): {e}")
         return False
@@ -62,15 +60,17 @@ async def is_account_active(platform: str, username: str) -> bool:
 async def monitor_accounts(app):
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
-        
         for platform in list(tracked_accounts.keys()):
             for username in list(tracked_accounts[platform]):
                 active = await is_account_active(platform, username)
-                
                 if active:
                     msg = f"🎉 **MÜJDE! HESAP AÇILDI** 🎉\n\nPlatform: **{platform.upper()}**\nKullanıcı Adı: `@{username}`\n\nHesap tekrar aktif duruma geldi!"
                     await app.bot.send_message(chat_id=MY_CHAT_ID, text=msg, parse_mode="Markdown")
                     tracked_accounts[platform].remove(username)
+
+# Bot başlatıldığında arka plan görevini güvenli şekilde tetikleyen fonksiyon
+async def post_init(application):
+    asyncio.create_task(monitor_accounts(application))
 
 # --- TELEGRAM KOMUTLARI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,17 +119,15 @@ if __name__ == '__main__':
         logging.error("HATA: BOT_TOKEN veya MY_CHAT_ID çevre değişkenleri eksik!")
         exit(1)
 
-    # Render'ın Web Service port kontrolünü geçmesi için arka planda mini web sunucusu başlatıyoruz
+    # Render web sağlığı kontrolü için sunucu
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    application = ApplicationBuilder().token(TOKEN).build()
+    # post_init entegrasyonu ile event loop hatası giderildi
+    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('ekle', add_account))
     application.add_handler(CommandHandler('liste', list_accounts))
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(monitor_accounts(application))
 
     print("Bot ve Web Sunucusu çalışıyor...")
     application.run_polling()
