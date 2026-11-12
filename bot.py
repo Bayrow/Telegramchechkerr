@@ -21,10 +21,10 @@ tracked_accounts = {
     "tiktok": set()
 }
 
-# --- PROFIL DURUMU KONTROL ETME ---
+# --- PROFIL DURUMU KONTROL ETME (GÜÇLENDİRİLMİŞ) ---
 async def is_account_active(platform: str, username: str) -> bool:
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9"
     }
     
@@ -38,6 +38,7 @@ async def is_account_active(platform: str, username: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, allow_redirects=True, timeout=10) as response:
+                # HTTP kodu 200 değilse (404, 403 vb.) kesinlikle kapalıdır
                 if response.status != 200:
                     return False
                 
@@ -45,16 +46,29 @@ async def is_account_active(platform: str, username: str) -> bool:
                 html_lower = html.lower()
                 
                 if platform == "instagram":
+                    # Kapsamlı yasaklı/kapatılmış hesap ibareleri (İngilizce ve Türkçe)
                     error_phrases = [
                         "sorry, this page isn't available",
                         "the link you followed may be broken",
                         "bu sayfaya ulaşılamıyor",
                         "girdiğiniz bağlantı bozuk",
-                        "click to load"
+                        "click to load",
+                        "deactivated",
+                        "suspended",
+                        "kapatıldı",
+                        "bulunamadı"
                     ]
                     for phrase in error_phrases:
                         if phrase in html_lower:
                             return False
+                    
+                    # Gerçek bir Instagram profilinde mutlaka bulunması gereken bazı meta etiketler veya kalıplar vardır.
+                    # Eğer hesap kapalıysa Instagram düz bir hata şablonu döner ve bu kalıplar eksik olur.
+                    # Örneğin "profile page" veya og:title içinde kullanıcı adının geçip geçmediğini kontrol edebiliriz.
+                    # Ek olarak, eğer sayfa içeriğinde "Log in" veya "Sign up" zorlaması (login wall) varsa hesap açık sayılamaz.
+                    if "log in" in html_lower and "sign up" in html_lower and f"@{username}" not in html_lower:
+                        return False
+
                     return True
                     
                 elif platform == "tiktok":
@@ -62,7 +76,8 @@ async def is_account_active(platform: str, username: str) -> bool:
                         "couldn't find this account",
                         "account suspended",
                         "kullanıcı bulunamadı",
-                        "hesap askıya alındı"
+                        "hesap askıya alındı",
+                        "this account is private" # Gizli hesaplar için tercihe göre ayarlanabilir ama şimdilik kapalı/yasaklı odaklı
                     ]
                     for phrase in error_phrases:
                         if phrase in html_lower:
@@ -118,7 +133,7 @@ async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     tracked_accounts[platform].add(username)
-    await update.message.reply_text(f"✅ **{platform.capitalize()}** hesabı `@{username}` takip listesine eklendi.", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ **{platform.capitalize()}** hesabı `@{username}` takip listesine eklendi.", parse_repo="Markdown" if False else "Markdown")
 
 async def list_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_CHAT_ID:
@@ -133,13 +148,12 @@ async def list_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_ping(request):
     return web.Response(text="Telegram Bot is active and running!")
 
-# --- PYTHON 3.14 UYUMLU ANA DÖNGÜ ---
+# --- ANA DÖNGÜ ---
 async def main():
     if not TOKEN or not MY_CHAT_ID:
         logging.error("HATA: BOT_TOKEN veya MY_CHAT_ID çevre değişkenleri eksik!")
         return
 
-    # 1. Web Sunucusunu Başlat (Render ve UptimeRobot için)
     web_app = web.Application()
     web_app.router.add_get("/", handle_ping)
     runner = web.AppRunner(web_app)
@@ -148,7 +162,6 @@ async def main():
     await site.start()
     logging.info(f"Web sunucusu {PORT} portunda çalışıyor...")
 
-    # 2. Telegram Botunu Hazırla ve Başlat
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('ekle', add_account))
@@ -159,7 +172,6 @@ async def main():
     await application.updater.start_polling()
     logging.info("Telegram botu çalışıyor...")
 
-    # 3. Hesap Takip Döngüsünü Çalıştır
     await monitor_accounts(application)
 
 if __name__ == '__main__':
