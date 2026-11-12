@@ -2,34 +2,18 @@ import os
 import asyncio
 import logging
 import aiohttp
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # Log ayarları
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- RENDER WEB SERVICE İÇİN PORT KONTROLÜ ---
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Telegram Bot is active and running!")
-        
-    def log_message(self, format, *args):
-        pass
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    server.serve_forever()
-
-# --- AYARLAR ---
+# --- AYARLAR (Render Environment Variables üzerinden güvenle okunur) ---
 TOKEN = os.getenv("BOT_TOKEN")
 MY_CHAT_ID = int(os.getenv("MY_CHAT_ID", "0"))
-CHECK_INTERVAL = 300   # 5 dakikada bir kontrol
+CHECK_INTERVAL = 600   # Kaç saniyede bir kontrol edilsin? (600 saniye = 10 dakika)
 
+# Takip edilecek hesaplar kümesi
 tracked_accounts = {
     "instagram": set(),
     "tiktok": set()
@@ -38,7 +22,8 @@ tracked_accounts = {
 # --- PROFIL DURUMU KONTROL ETME ---
 async def is_account_active(platform: str, username: str) -> bool:
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
     }
     
     if platform == "instagram":
@@ -51,7 +36,41 @@ async def is_account_active(platform: str, username: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, allow_redirects=True, timeout=10) as response:
-                return response.status == 200
+                # HTTP kodu 200 değilse kesinlikle kapalıdır
+                if response.status != 200:
+                    return False
+                
+                html = await response.text()
+                html_lower = html.lower()
+                
+                if platform == "instagram":
+                    # Instagram kapalı/yasaklı sayfalarda HTTP 200 dönse bile bu metinler yer alır
+                    error_phrases = [
+                        "sorry, this page isn't available",
+                        "the link you followed may be broken",
+                        "bu sayfaya ulaşılamıyor",
+                        "girdiğiniz bağlantı bozuk",
+                        "click to load"
+                    ]
+                    for phrase in error_phrases:
+                        if phrase in html_lower:
+                            return False
+                    return True
+                    
+                elif platform == "tiktok":
+                    # TikTok kapalı/yasaklı sayfalarda yer alan ifadeler
+                    error_phrases = [
+                        "couldn't find this account",
+                        "account suspended",
+                        "kullanıcı bulunamadı",
+                        "hesap askıya alındı"
+                    ]
+                    for phrase in error_phrases:
+                        if phrase in html_lower:
+                            return False
+                    return True
+                    
+                return False
     except Exception as e:
         logging.error(f"Hata oluştu ({platform} - {username}): {e}")
         return False
@@ -60,20 +79,19 @@ async def is_account_active(platform: str, username: str) -> bool:
 async def monitor_accounts(app):
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
+        
         for platform in list(tracked_accounts.keys()):
             for username in list(tracked_accounts[platform]):
                 active = await is_account_active(platform, username)
+                
                 if active:
                     msg = f"🎉 **MÜJDE! HESAP AÇILDI** 🎉\n\nPlatform: **{platform.upper()}**\nKullanıcı Adı: `@{username}`\n\nHesap tekrar aktif duruma geldi!"
                     await app.bot.send_message(chat_id=MY_CHAT_ID, text=msg, parse_mode="Markdown")
                     tracked_accounts[platform].remove(username)
 
-# Bot başlatıldığında arka plan görevini güvenli şekilde tetikleyen fonksiyon
-async def post_init(application):
-    asyncio.create_task(monitor_accounts(application))
-
-# --- TELEGRAM KOMUTLARI ---
+# --- TELEGRAM KOMUTLARI (ID KONTROLLÜ) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Sadece senin ID'n ile eşleşirse çalışır
     if update.effective_user.id != MY_CHAT_ID:
         await update.message.reply_text("⛔ Bu bot özeldir, sadece sahibi kullanabilir.")
         return
@@ -88,7 +106,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_CHAT_ID:
-        return
+        return  # Yetkisiz kişilere sessiz kalır
 
     if len(context.args) < 2:
         await update.message.reply_text("Kullanım: `/ekle instagram kullanıcı_adı`", parse_mode="Markdown")
@@ -119,15 +137,14 @@ if __name__ == '__main__':
         logging.error("HATA: BOT_TOKEN veya MY_CHAT_ID çevre değişkenleri eksik!")
         exit(1)
 
-    # Render web sağlığı kontrolü için sunucu
-    threading.Thread(target=run_web_server, daemon=True).start()
-
-    # post_init entegrasyonu ile event loop hatası giderildi
-    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('ekle', add_account))
     application.add_handler(CommandHandler('liste', list_accounts))
 
-    print("Bot ve Web Sunucusu çalışıyor...")
+    loop = asyncio.get_event_loop()
+    loop.create_task(monitor_accounts(application))
+
+    print("Bot çalışıyor...")
     application.run_polling()
