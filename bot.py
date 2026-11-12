@@ -21,7 +21,7 @@ tracked_accounts = {
     "tiktok": set()
 }
 
-# --- PROFIL DURUMU KONTROL ETME (GÜÇLENDİRİLMİŞ) ---
+# --- PROFIL DURUMU KONTROL ETME ---
 async def is_account_active(platform: str, username: str) -> bool:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -38,7 +38,6 @@ async def is_account_active(platform: str, username: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, allow_redirects=True, timeout=10) as response:
-                # HTTP kodu 200 değilse (404, 403 vb.) kesinlikle kapalıdır
                 if response.status != 200:
                     return False
                 
@@ -46,7 +45,6 @@ async def is_account_active(platform: str, username: str) -> bool:
                 html_lower = html.lower()
                 
                 if platform == "instagram":
-                    # Kapsamlı yasaklı/kapatılmış hesap ibareleri (İngilizce ve Türkçe)
                     error_phrases = [
                         "sorry, this page isn't available",
                         "the link you followed may be broken",
@@ -62,10 +60,6 @@ async def is_account_active(platform: str, username: str) -> bool:
                         if phrase in html_lower:
                             return False
                     
-                    # Gerçek bir Instagram profilinde mutlaka bulunması gereken bazı meta etiketler veya kalıplar vardır.
-                    # Eğer hesap kapalıysa Instagram düz bir hata şablonu döner ve bu kalıplar eksik olur.
-                    # Örneğin "profile page" veya og:title içinde kullanıcı adının geçip geçmediğini kontrol edebiliriz.
-                    # Ek olarak, eğer sayfa içeriğinde "Log in" veya "Sign up" zorlaması (login wall) varsa hesap açık sayılamaz.
                     if "log in" in html_lower and "sign up" in html_lower and f"@{username}" not in html_lower:
                         return False
 
@@ -76,8 +70,7 @@ async def is_account_active(platform: str, username: str) -> bool:
                         "couldn't find this account",
                         "account suspended",
                         "kullanıcı bulunamadı",
-                        "hesap askıya alındı",
-                        "this account is private" # Gizli hesaplar için tercihe göre ayarlanabilir ama şimdilik kapalı/yasaklı odaklı
+                        "hesap askıya alındı"
                     ]
                     for phrase in error_phrases:
                         if phrase in html_lower:
@@ -133,7 +126,7 @@ async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     tracked_accounts[platform].add(username)
-    await update.message.reply_text(f"✅ **{platform.capitalize()}** hesabı `@{username}` takip listesine eklendi.", parse_repo="Markdown" if False else "Markdown")
+    await update.message.reply_text(f"✅ **{platform.capitalize()}** hesabı `@{username}` takip listesine eklendi.", parse_mode="Markdown")
 
 async def list_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_CHAT_ID:
