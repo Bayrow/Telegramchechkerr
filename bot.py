@@ -2,16 +2,18 @@ import os
 import asyncio
 import logging
 import aiohttp
+from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # Log ayarları
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- AYARLAR (Render Environment Variables üzerinden güvenle okunur) ---
+# --- AYARLAR ---
 TOKEN = os.getenv("BOT_TOKEN")
 MY_CHAT_ID = int(os.getenv("MY_CHAT_ID", "0"))
-CHECK_INTERVAL = 600   # Kaç saniyede bir kontrol edilsin? (600 saniye = 10 dakika)
+PORT = int(os.getenv("PORT", "10000"))
+CHECK_INTERVAL = 600   # 10 dakikada bir kontrol
 
 # Takip edilecek hesaplar kümesi
 tracked_accounts = {
@@ -36,7 +38,6 @@ async def is_account_active(platform: str, username: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, allow_redirects=True, timeout=10) as response:
-                # HTTP kodu 200 değilse kesinlikle kapalıdır
                 if response.status != 200:
                     return False
                 
@@ -44,7 +45,6 @@ async def is_account_active(platform: str, username: str) -> bool:
                 html_lower = html.lower()
                 
                 if platform == "instagram":
-                    # Instagram kapalı/yasaklı sayfalarda HTTP 200 dönse bile bu metinler yer alır
                     error_phrases = [
                         "sorry, this page isn't available",
                         "the link you followed may be broken",
@@ -58,7 +58,6 @@ async def is_account_active(platform: str, username: str) -> bool:
                     return True
                     
                 elif platform == "tiktok":
-                    # TikTok kapalı/yasaklı sayfalarda yer alan ifadeler
                     error_phrases = [
                         "couldn't find this account",
                         "account suspended",
@@ -89,9 +88,8 @@ async def monitor_accounts(app):
                     await app.bot.send_message(chat_id=MY_CHAT_ID, text=msg, parse_mode="Markdown")
                     tracked_accounts[platform].remove(username)
 
-# --- TELEGRAM KOMUTLARI (ID KONTROLLÜ) ---
+# --- TELEGRAM KOMUTLARI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Sadece senin ID'n ile eşleşirse çalışır
     if update.effective_user.id != MY_CHAT_ID:
         await update.message.reply_text("⛔ Bu bot özeldir, sadece sahibi kullanabilir.")
         return
@@ -106,7 +104,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_CHAT_ID:
-        return  # Yetkisiz kişilere sessiz kalır
+        return
 
     if len(context.args) < 2:
         await update.message.reply_text("Kullanım: `/ekle instagram kullanıcı_adı`", parse_mode="Markdown")
@@ -131,20 +129,38 @@ async def list_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"🎵 **TikTok:** {', '.join(tracked_accounts['tiktok']) if tracked_accounts['tiktok'] else 'Yok'}"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- ANA ÇALIŞTIRMA ---
-if __name__ == '__main__':
+# --- UPTIMEROBOT WEB SUNUCUSU ---
+async def handle_ping(request):
+    return web.Response(text="Telegram Bot is active and running!")
+
+# --- PYTHON 3.14 UYUMLU ANA DÖNGÜ ---
+async def main():
     if not TOKEN or not MY_CHAT_ID:
         logging.error("HATA: BOT_TOKEN veya MY_CHAT_ID çevre değişkenleri eksik!")
-        exit(1)
+        return
 
+    # 1. Web Sunucusunu Başlat (Render ve UptimeRobot için)
+    web_app = web.Application()
+    web_app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info(f"Web sunucusu {PORT} portunda çalışıyor...")
+
+    # 2. Telegram Botunu Hazırla ve Başlat
     application = ApplicationBuilder().token(TOKEN).build()
-
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('ekle', add_account))
     application.add_handler(CommandHandler('liste', list_accounts))
 
-    loop = asyncio.get_event_loop()
-    loop.create_task(monitor_accounts(application))
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    logging.info("Telegram botu çalışıyor...")
 
-    print("Bot çalışıyor...")
-    application.run_polling()
+    # 3. Hesap Takip Döngüsünü Çalıştır
+    await monitor_accounts(application)
+
+if __name__ == '__main__':
+    asyncio.run(main())
